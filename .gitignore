@@ -1,0 +1,24 @@
+# database dumps
+*.dump
+*.sql
+
+# backups
+backups/
+
+# local postgres data
+postgres_data/
+
+# python
+__pycache__/
+*.pyc
+
+# environment files
+.env
+.env.*
+
+# logs
+*.log
+
+# mac / linux junk
+.DS_Store
+Thumbs.db

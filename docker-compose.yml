@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: formwave-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: formwave
+      POSTGRES_PASSWORD: formwave
+      POSTGRES_DB: formwave
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/migration/init.sql:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U formwave -d formwave"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - formwave-network
+
+
+volumes:
+  postgres_data:
+
+
+networks:
+  formwave-network:
+    name: formwave-network

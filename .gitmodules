@@ -1,0 +1,6 @@
+[submodule "formwave-app"]
+	path = formwave-app
+	url = git@github-personal:DS570Capstone/formwave-app.git
+[submodule "formwave-ai"]
+	path = formwave-ai
+	url = git@github-personal:DS570Capstone/formwave-ai.git
