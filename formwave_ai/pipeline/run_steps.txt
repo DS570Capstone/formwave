@@ -1,0 +1,13 @@
+python formwave_ai/pipeline/run_pipeline.py   --mode simple   --data_dir formwave_ai/pipeline/data   --max_videos 1
+
+rm -rf formwave_ai/pipeline/data/*
+
+python formwave_ai/pipeline/run_pipeline.py \
+  --mode simple \
+  --data_dir formwave_ai/pipeline/data \
+  --max_videos 2 \
+  --clean_data \
+  --reset_tracking \
+  --verbose
+
+  python formwave_ai/pipeline/step2b_filter_segments.py --data_dir ./formwave_ai/pipeline/data --score_thresh 0.75 --verbose --top_k 5

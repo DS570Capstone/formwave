@@ -22,3 +22,18 @@ __pycache__/
 # mac / linux junk
 .DS_Store
 Thumbs.db
+
+fse570-oregon-formwave-2bfb03d8ed9a.json
+
+# Pipeline: ignore JSON artifacts (allow explicit metadata files)
+*.json
+!formwave_ai/pipeline/data/meta.json
+!formwave_ai/pipeline/data/meta.csv
+
+# Ignore runtime data and outputs
+formwave_ai/pipeline/data/
+pipeline_outputs/
+outputs/
+formwave_ai/archive/
+
+venv/
