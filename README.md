@@ -1,177 +1,57 @@
 # FormWave
 
-Monorepo orchestration for the **FormWave platform**.
+Monorepo for FormWave infrastructure and the AI/application subprojects.
 
-This repository provides the **shared infrastructure and coordination layer** for the FormWave system.
+This repository currently contains orchestration and infra assets plus the following local directories:
 
-Actual implementation lives in the submodules:
+- `formwave-ai/` — AI pipeline sources, scripts, and model artifacts.
+- `formwave-app/` — application code (backend/frontend).
+- `infra/` — database migration scripts and backup helpers.
 
-* `formwave-ai` – AI pipeline for data extraction, analysis, and model training
-* `formwave-app` – backend API and frontend application
+This README describes the repository's current state, known issues, and quick developer setup notes.
 
-Each submodule contains its own documentation and startup instructions.
+**Current status**
 
-Refer to their README files for details.
+- **Infrastructure orchestration present:** `docker-compose.yml` is available to start PostgreSQL and MinIO.
+- **AI pipeline code included:** `formwave-ai/` contains the pipeline and modules used for data processing and training.
+- **Missing reproducible dependency manifests:** there is no `requirements.txt`, `pyproject.toml`, or similar at repository root or in submodules. Reproducible installs are not guaranteed.
+- **No automated CI/tests:** there is no test suite or CI configuration in this repo.
+- **Sensitive file committed:** a Google Cloud service account JSON is present in the tree: [formwave_ai/storage/fse570-oregon-formwave-2bfb03d8ed9a.json](formwave_ai/storage/fse570-oregon-formwave-2bfb03d8ed9a.json). Treat this as a security incident (see Security section).
+- **Large backup in repo:** a DB dump exists under `infra/postgres/backups/` which may contain sensitive or large data.
 
----
+**Security (action required)**
 
-# Repository Structure
+- Remove the committed service account from git history and revoke/rotate the key in GCP immediately.
+- Do not run containers or scripts that rely on the checked-in JSON key. Use environment-injected credentials or CI secret stores instead.
+- Remove large or sensitive backups from the repository and move them to secure storage. Consider `git filter-repo` or BFG to purge history.
 
-```
-formwave/
-│
-├── docker-compose.yml
-│
-├── formwave-ai/      # AI engine (submodule)
-├── formwave-app/     # application (submodule)
-│
-└── infra/
-    └── postgres/
-        ├── migration/
-        ├── backups/
-        └── scripts/
-```
+Quick commands (examples):
 
-This repository is responsible only for:
-
-* shared infrastructure
-* database lifecycle
-* operational scripts
-
----
-
-# Shared PostgreSQL
-
-Both **FormWave AI** and **FormWave App** use the same PostgreSQL instance.
-
-The database is started from this repository.
-
-Start PostgreSQL:
-
-```
+```bash
+# start infra (requires env vars set)
 docker compose up -d
-```
 
-Verify container:
-
-```
+# inspect running containers
 docker ps
 ```
 
-Expected container:
+Developer notes
 
-```
-formwave-postgres
-```
+- Before running anything that interacts with cloud APIs, configure credentials via environment variables or your local gcloud SDK.
+- Add a dependency manifest in each Python component (e.g., `requirements.txt` or `pyproject.toml`) and pin versions.
+- Replace ad-hoc `print()` debugging in the pipeline with structured `logging` and add a minimal test scaffold.
 
----
+Recommended next steps
 
-# Why a Shared Database
+1. Rotate and remove the committed service account key (urgent).
+2. Add `requirements.txt` / `pyproject.toml` for `formwave-ai` and `formwave-app` (short-term).
+3. Add basic CI that installs deps, runs linters, and runs tests (short-term).
+4. Remove large backups and stop committing generated data; add `.gitignore` entries (short-term).
 
-The system uses one PostgreSQL instance to keep all platform data in a single location.
+Where to look
 
-Schemas are used to separate responsibilities.
+- Pipeline code: [formwave_ai/pipeline](formwave_ai/pipeline)
+- Storage helpers: [formwave_ai/storage](formwave_ai/storage)
+- Infra scripts and backups: [infra/postgres](infra/postgres)
 
-Example layout:
-
-```
-core
-ai_pipeline
-app
-```
-
-* `core` – shared entities
-* `ai_pipeline` – data extraction and AI processing
-* `app` – application data
-
-This approach allows:
-
-* a single source of truth
-* easier data exchange between AI and the application
-* simpler infrastructure management
-
----
-
-# Running the Platform
-
-1. Clone repository with submodules
-
-```
-git clone --recurse-submodules <repo-url>
-```
-
-If already cloned:
-
-```
-git submodule update --init --recursive
-```
-
-2. Start infrastructure
-
-```
-docker compose up -d
-```
-
-3. Run components separately
-
-For AI pipeline:
-
-```
-cd formwave-ai
-```
-
-Refer to:
-
-```
-formwave-ai/README.md
-```
-
-For application:
-
-```
-cd formwave-app
-```
-
-Refer to:
-
-```
-formwave-app/README.md
-```
-
----
-
-# Database Backups
-
-Backup scripts are located in:
-
-```
-infra/postgres/scripts
-```
-
-Run backup:
-
-```
-./infra/postgres/scripts/backup_to_gdrive.sh
-```
-
-The dump will be created at:
-
-```
-infra/postgres/backups/formwave_latest.dump
-```
-
-After generation, upload the dump to the shared storage location (Google Drive).
-
----
-
-# Notes
-
-This repository should contain **only infrastructure and orchestration**.
-
-Submodules contain:
-
-* application code
-* AI pipeline
-* service-specific documentation
-
-Refer to their README files for setup and usage.
+If you want, I can: remove the secret from history, add `requirements.txt` for `formwave-ai`, and scaffold a basic GitHub Actions workflow. Tell me which to start with.
