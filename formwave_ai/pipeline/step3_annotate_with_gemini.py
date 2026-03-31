@@ -515,6 +515,18 @@ def walk_dataset(data_dir: Path) -> list[dict]:
         print(f"[ERROR] Data directory not found: {data_dir}")
         return records
 
+    # Include curated push-up accepted annotations (new status workflow)
+    curated_ann_dir = data_dir / "curated_pushups" / "accepted_annotations"
+    if curated_ann_dir.exists():
+        for jf in sorted(curated_ann_dir.glob("*.json")):
+            records.append({
+                "json_path": jf,
+                "exercise":  "push_up",
+                "camera":    "UNKNOWN",
+                "split":     "accepted",
+                "video_id":  jf.stem,
+            })
+
     for exercise_dir in sorted(data_dir.iterdir()):
         if not exercise_dir.is_dir():
             continue

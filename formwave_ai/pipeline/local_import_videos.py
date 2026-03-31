@@ -251,17 +251,16 @@ def run(args):
 
     placed_clips = []
     for (ex, cam), clips in groups.items():
-        splits = assign_splits(clips)
-        for split_name, split_clips in splits.items():
-            dest_dir = data_root / ex / cam / split_name / "videos"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            for c in split_clips:
-                dst = dest_dir / c.name
-                shutil.move(str(c), str(dst))
-                placed_clips.append(dst)
+        # New workflow: do not create train/val/test splits. Place clips
+        # into a single videos folder per exercise/camera.
+        dest_dir = data_root / ex / cam / "videos"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for c in clips:
+            dst = dest_dir / c.name
+            shutil.move(str(c), str(dst))
+            placed_clips.append(dst)
 
-        print(f"  {ex}/{cam}: "
-              + "  ".join(f"{sp}={len(sc)}" for sp, sc in splits.items()))
+        print(f"  {ex}/{cam}: placed={len(clips)} -> {dest_dir}")
 
     # Cleanup temp dir
     tmp_dir = data_root / "_tmp_clips"

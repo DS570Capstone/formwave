@@ -47,6 +47,8 @@ import sys
 from pathlib import Path
 import types
 from datetime import datetime
+import logging
+import warnings
 
 # ── MAC SILICON MMCV PATCH ──────────────────────────────────────────────────
 # MMCV extensions (_ext) are often missing on Mac Silicon. 
@@ -81,11 +83,94 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 
 import cv2
+import mediapipe as mp
+
+mp_pose = mp.solutions.pose
+
+
+def is_single_person_video(video_path, sample_frames=10):
+    detect_count = 0
+    valid_frames = 0
+    multi_person_suspect = 0
+    cap = cv2.VideoCapture(str(video_path))
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames == 0:
+        return False
+
+    step = max(total_frames // sample_frames, 1)
+
+    valid_frames = 0
+    multi_person_suspect = 0
+
+    # prepare additional lightweight detectors (HOG person detector + face cascade)
+    face_cascade = None
+    try:
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    except Exception:
+        face_cascade = None
+
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+    with mp_pose.Pose(static_image_mode=True) as pose:
+        for i in range(sample_frames):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # resize for faster detection
+            small = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+
+            # pose landmarks check
+            results = pose.process(small)
+            if results.pose_landmarks:
+                valid_frames += 1
+                # heuristic: low overall landmark visibility may indicate multiple people or occlusion
+                try:
+                    if results.pose_landmarks.landmark[0].visibility < 0.3:
+                        multi_person_suspect += 1
+                except Exception:
+                    pass
+
+            # face detection: multiple faces -> multi-person
+            try:
+                if face_cascade is not None:
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+                    if len(faces) >= 2:
+                        multi_person_suspect += 1
+            except Exception:
+                pass
+
+            # HOG person detector as fallback: detects upright people
+            try:
+                rects, weights = hog.detectMultiScale(small, winStride=(8, 8), padding=(8, 8), scale=1.05)
+                if rects is not None and len(rects) >= 2:
+                    multi_person_suspect += 1
+            except Exception:
+                pass
+
+    cap.release()
+
+    if valid_frames < 5:
+        return False
+
+    if multi_person_suspect > 3:
+        return False
+
+    return True
+
+
+import cv2
 import numpy as np
 from scipy.signal import savgol_filter
 
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
+
+logger = logging.getLogger(__name__)
 
 # MediaPipe pose landmarker model (Tasks API, mediapipe >= 0.10)
 MODEL_PATH = Path(__file__).parent / "models" / "pose_landmarker.task"
@@ -109,7 +194,7 @@ KP = {
 }
 
 CONF_THRESHOLD = 0.3          # discard joints below this confidence
-SG_WINDOW      = 11           # Savitzky-Golay smoothing window (frames)
+SG_WINDOW      = 7           # Savitzky-Golay smoothing window (frames)
 SG_POLYORDER   = 3
 
 
@@ -274,44 +359,85 @@ def _build_inferencer():
         return None, None
 
 
-def extract_keypoints_onnx(inferencer, video_path: Path) -> tuple:
+def extract_keypoints_onnx(inferencer, video_path: Path, frame_skip: int = 2) -> tuple:
     """Extract keypoints using RTMPose ONNX implementation."""
+    logger.debug("Starting ONNX keypoint extraction: %s (frame_skip=%s)", video_path.name, frame_skip)
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    progress_interval = max(1, total_frames // 10) if total_frames > 0 else max(1, frame_skip * 100)
     all_kpts, all_confs = [], []
+
+    frame_idx = 0
+
+    bbox = None
+    prev_frame = None
+    skipped_since_log = 0
+    detect_count = 0
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
-        
+        if not ret:
+            break
+
+        if frame_idx % frame_skip != 0:
+            skipped_since_log += 1
+            frame_idx += 1
+            continue
+        frame_idx += 1
+
+        # reduce resolution for speed (smaller but adequate)
+        frame = cv2.resize(frame, (480, 270))
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        bbox = inferencer.detect_person_bbox(rgb)
+        # Reduce detection frequency: detect every (frame_skip * 5) frames
+        # e.g. frame_skip=4 -> detect every 20 frames (huge speedup with minor quality loss)
+        if frame_idx % (frame_skip * 5) == 0 or bbox is None:
+            bbox = inferencer.detect_person_bbox(rgb)
+            detect_count += 1
+            # Log detect occasionally (one per N detects) to avoid flood
+            if detect_count % 5 == 0:
+                logger.debug("Frame %d: detect called — landmarks=%s skipped_since_last_detect=%d detect_count=%d", frame_idx, bool(bbox), skipped_since_log, detect_count)
+            skipped_since_log = 0
         
         if bbox is not None:
             kpts, confs = inferencer.infer_pose(rgb, bbox)
         else:
             kpts, confs = np.zeros((17, 2)), np.zeros(17)
-            
+
         all_kpts.append(kpts)
         all_confs.append(confs)
+        # Progress: log at 10% intervals (compact)
+        if total_frames > 0 and frame_idx % progress_interval == 0:
+            pct = int(frame_idx / total_frames * 100)
+            logger.info("Progress %d%% — frame %d/%d", pct, frame_idx, total_frames)
 
     cap.release()
     if not all_kpts: return np.zeros((1, 17, 2)), np.zeros((1, 17)), fps
     return np.stack(all_kpts), np.stack(all_confs), fps
 
 
-def extract_keypoints_mmpose(inferencer, video_path: Path) -> tuple:
+def extract_keypoints_mmpose(inferencer, video_path: Path, frame_skip: int = 2) -> tuple:
     """Extract keypoints from video using MMPose. Returns (kpts, confs, fps)."""
+    logger.debug("Starting MMPose extraction: %s (frame_skip=%s)", video_path.name, frame_skip)
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    progress_interval = max(1, total_frames // 10) if total_frames > 0 else max(1, frame_skip * 100)
     cap.release()
 
     result_gen = inferencer(str(video_path), show=False, progress=False)
 
     all_kpts  = []
     all_confs = []
-
+    frame_idx = 0
+    skipped_since_log = 0
+    last_result = None
+    detect_count = 0
     for frame_result in result_gen:
+        if frame_idx % frame_skip != 0:
+            skipped_since_log += 1
+            frame_idx += 1
+            continue
         preds = frame_result.get("predictions", [[]])
         if preds and preds[0]:
             person = preds[0][0]  # first detected person
@@ -323,6 +449,12 @@ def extract_keypoints_mmpose(inferencer, video_path: Path) -> tuple:
 
         all_kpts.append(kpts)
         all_confs.append(confs)
+        # Progress: log at 10% intervals
+        if total_frames > 0 and frame_idx % progress_interval == 0:
+            pct = int(frame_idx / total_frames * 100)
+            logger.info("Progress %d%% — frame %d/%d", pct, frame_idx, total_frames)
+            skipped_since_log = 0
+        frame_idx += 1
 
     return np.stack(all_kpts), np.stack(all_confs), fps
 
@@ -366,22 +498,33 @@ def _tasks_landmarks_to_coco(result, h: int, w: int) -> tuple:
     return kpts, confs
 
 
-def extract_keypoints_mediapipe(landmarker, video_path: Path) -> tuple:
+def extract_keypoints_mediapipe(landmarker, video_path: Path, frame_skip: int = 2) -> tuple:
     """Extract keypoints using MediaPipe PoseLandmarker Tasks API."""
     import mediapipe as mp
+    logger.debug("Starting MediaPipe extraction: %s (frame_skip=%s)", video_path.name, frame_skip)
 
     cap = cv2.VideoCapture(str(video_path))
+    detect_count = 0
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    progress_interval = max(1, total_frames // 10) if total_frames > 0 else max(1, frame_skip * 100)
 
     all_kpts, all_confs = [], []
     frame_idx = 0
+    skipped_since_log = 0
+    last_result = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        if frame_idx % frame_skip != 0:
+            skipped_since_log += 1
+            frame_idx += 1
+            continue
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(
@@ -389,11 +532,25 @@ def extract_keypoints_mediapipe(landmarker, video_path: Path) -> tuple:
             data=rgb,
         )
         # Use detect() for IMAGE mode (no timestamp needed)
-        result = landmarker.detect(mp_image)
+        # Reduce detection frequency: reuse last_result between detects
+        if frame_idx % (frame_skip * 5) == 0 or last_result is None:
+            result = landmarker.detect(mp_image)
+            last_result = result
+            detect_count += 1
+            # Log detect occasionally (one per N detects) to avoid flood
+            if detect_count % 5 == 0:
+                logger.debug("MediaPipe detect frame %d — landmarks=%s skipped_since_last_detect=%d detect_count=%d", frame_idx, bool(result.pose_landmarks), skipped_since_log, detect_count)
+            skipped_since_log = 0
+        else:
+            result = last_result
 
         kpts, confs = _tasks_landmarks_to_coco(result, h, w)
         all_kpts.append(kpts)
         all_confs.append(confs)
+        # Progress: log at 10% intervals
+        if total_frames > 0 and frame_idx % progress_interval == 0:
+            pct = int(frame_idx / total_frames * 100)
+            logger.info("Progress %d%% — frame %d/%d", pct, frame_idx, total_frames)
         frame_idx += 1
 
     cap.release()
@@ -432,7 +589,7 @@ def scale_normalise(kpts: np.ndarray) -> np.ndarray:
     Torso = midpoint(shoulders) → midpoint(hips).
     Also centre x,y around hip midpoint.
     """
-    out = kpts.copy().astype(np.float64)
+    out = kpts.copy().astype(np.float32)
     T   = out.shape[0]
 
     for t in range(T):
@@ -589,18 +746,24 @@ def process_clip(
     split:      str,
     backend:    str,
     inferencer,
+    frame_skip: int = 2,
 ) -> dict:
     """Full processing for one video clip. Returns clip annotation dict."""
 
     # Extract raw keypoints
+    logger.info("Processing clip %s with backend=%s frame_skip=%s", video_path.name, backend, frame_skip)
+    start_t = datetime.now()
+
     if backend == "mmpose":
-        kpts, confs, fps = extract_keypoints_mmpose(inferencer, video_path)
+        kpts, confs, fps = extract_keypoints_mmpose(inferencer, video_path, frame_skip=frame_skip)
     elif backend == "rtmpose_onnx":
-        kpts, confs, fps = extract_keypoints_onnx(inferencer, video_path)
+        kpts, confs, fps = extract_keypoints_onnx(inferencer, video_path, frame_skip=frame_skip)
     else:
-        kpts, confs, fps = extract_keypoints_mediapipe(inferencer, video_path)
+        kpts, confs, fps = extract_keypoints_mediapipe(inferencer, video_path, frame_skip=frame_skip)
 
     T, J, _ = kpts.shape
+    duration = (datetime.now() - start_t).total_seconds()
+    logger.info("Finished extraction for %s — frames=%d fps=%.2f duration=%.2fs", video_path.name, T, fps, duration)
 
     # Filter low-confidence + normalise
     kpts_filtered  = filter_low_confidence(kpts, confs)
@@ -630,6 +793,17 @@ def process_clip(
 
 def run(args):
     data_root = Path(args.data_dir)
+    # Configure logging
+    level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    logging.basicConfig(level=level, format="[%(levelname)s] %(message)s")
+    # Reduce noisy logs from third-party libs when not verbose
+    if not getattr(args, "verbose", False):
+        logging.getLogger('absl').setLevel(logging.WARNING)
+        logging.getLogger('tensorflow').setLevel(logging.WARNING)
+
+    # Suppress known protobuf deprecation warning (harmless)
+    warnings.filterwarnings("ignore", message=".*GetPrototype.*deprecated.*", category=UserWarning)
+
     backend, inferencer = _build_inferencer()
 
     # Find all full videos under data/raw/videos
@@ -695,6 +869,18 @@ def run(args):
         except Exception:
             pass
 
+        # Quick single-person heuristic before heavy pose extraction
+        try:
+            if not is_single_person_video(vid_path):
+                print(f"   ❌ Skipping (multi-person or bad pose): {vid_path}")
+                mark_clip_status(tracking, clip_id, processed=False, status="skipped", reason="multi_person_or_bad_pose")
+                save_tracking(tracking, data_root)
+                skipped += 1
+                continue
+        except Exception:
+            # If the quick check fails for any reason, proceed with normal flow
+            pass
+
         if args.skip_existing and ann_path.exists():
             print("   → Already processed (annotation exists). Skipping.")
             skipped += 1
@@ -704,7 +890,8 @@ def run(args):
 
         try:
             clip_data = process_clip(
-                vid_path, exercise, camera, split, backend, inferencer
+                vid_path, exercise, camera, split, backend, inferencer,
+                frame_skip=getattr(args, "frame_skip", 2),
             )
 
             # 🚨 Skip bad videos (safety): ensure sufficient frames
@@ -725,7 +912,10 @@ def run(args):
             ann_dir.mkdir(parents=True, exist_ok=True)
             # Log pose extraction
             print(f"   [POSE EXTRACTED] {clip_id} -> {ann_path.name}")
-            save_keypoints = getattr(args, "save_keypoints", False)
+            # Save full `keypoints` by default for raw/full-video processing
+            # (these files are used by curated push-up workflows). Users may
+            # still opt-out with `--save_keypoints=False` if desired.
+            save_keypoints = getattr(args, "save_keypoints", False) or (split == 'raw')
 
             if save_keypoints:
                 save_data = clip_data
@@ -785,6 +975,8 @@ def parse_args():
                    help="Skip clips that already have annotation JSONs")
     p.add_argument("--save_keypoints", action="store_true",
                    help="Save full [T,17,2] keypoints in annotation (large files)")
+    p.add_argument("--frame_skip", type=int, default=2,
+                   help="Skip frames when extracting keypoints to speed up processing (default: 2)")
     p.add_argument("--verbose",        action="store_true",
                    help="Print full tracebacks on errors")
     p.add_argument("--force_reprocess", action="store_true",

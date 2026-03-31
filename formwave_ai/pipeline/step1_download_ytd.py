@@ -67,7 +67,7 @@ SPLIT_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
 # clip duration in seconds (each video → multiple clips of this length)
 CLIP_DURATION_S = 8
 # max simultaneous downloads per query
-MAX_PER_QUERY   = 5
+MAX_PER_QUERY   = 30
 
 
 def check_deps():

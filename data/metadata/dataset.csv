@@ -1,0 +1,7 @@
+segment_id,file_path,duration,score,label
+IODxDxX7oi4_seg01.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/test/IODxDxX7oi4_seg01.mp4,22.0,0.7453608510792036,g
+IODxDxX7oi4_seg02.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/test/IODxDxX7oi4_seg02.mp4,3.0,0.7301779601202147,g
+IODxDxX7oi4_seg03.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/test/IODxDxX7oi4_seg03.mp4,14.0,0.830816572792169,g
+IODxDxX7oi4_seg04.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/test/IODxDxX7oi4_seg04.mp4,17.0,0.712014908273624,b
+IODxDxX7oi4_seg05.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/test/IODxDxX7oi4_seg05.mp4,6.0,0.8367482055572169,g
+WDIpL0pjun0_seg01.mp4,/home/zhanespo/fse570/formwave/formwave_ai/pipeline/data/processed/train/WDIpL0pjun0_seg01.mp4,3.0,0.9996944463217681,g
